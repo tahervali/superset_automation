@@ -1,88 +1,40 @@
-# === MAIN CONFIGURATION FILE ===
-# This is the primary file you'll modify when creating different charts
+import json
+from typing import Dict, Any, Optional
 
-# Superset connection settings
-SUPERSET_CONFIG = {
-    "url": "http://localhost:8088",
-    "username": "admin",
-    "password": "admin"
-}
+class ChartConfig:
+    def __init__(self, title: str, x_axis: str, y_axis: str, chart_type: str, data_source: str, filters: Optional[Dict[str, Any]] = None):
+        self.title = title
+        self.x_axis = x_axis
+        self.y_axis = y_axis
+        self.chart_type = chart_type
+        self.data_source = data_source
+        self.filters = filters if filters is not None else {}
 
-# Dataset and dashboard settings
-DATASET_ID = 1  # Your dataset ID
-DASHBOARD_ID = 1  # Set to specific dashboard ID to use existing dashboard, or None to create new
-DASHBOARD_TITLE = "Auto Generated Dashboard"
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "title": self.title,
+            "x_axis": self.x_axis,
+            "y_axis": self.y_axis,
+            "chart_type": self.chart_type,
+            "data_source": self.data_source,
+            "filters": self.filters
+        }
 
-# Operation mode settings
-UPDATE_MODE = True  # If True, updates existing charts instead of creating duplicates
-AUTO_UPDATE_DASHBOARD = True  # If True, automatically adds charts to dashboard
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
 
-# === CHART CONFIGURATIONS ===
-# Add, remove, or modify charts here
-CHARTS_CONFIG = [
-    {
-        "name": "Record Count Over Time",
-        "viz_type": "line",
-        "metric": "COUNT",
-        "groupby_type": "date"
-    },
-    {
-        "name": "Data Distribution",
-        "viz_type": "bar", 
-        "metric": "COUNT",
-        "groupby_type": "category"
-    },
-    {
-        "name": "Total Records",
-        "viz_type": "big_number_total",
-        "metric": "COUNT",
-        "groupby_type": None
-    },
-    {
-        "name": "Data Breakdown",
-        "viz_type": "pie",
-        "metric": "COUNT",
-        "groupby_type": "category"
-    },
-    # Add more chart configurations here as needed
-    # {
-    #     "name": "Custom Chart Name",
-    #     "viz_type": "table",  # or any other supported viz type
-    #     "metric": "COUNT",
-    #     "groupby_type": "category"  # or "date" or None
-    # },
-]
+    @staticmethod
+    def from_dict(config_dict: Dict[str, Any]) -> 'ChartConfig':
+        return ChartConfig(
+            title=config_dict.get("title", ""),
+            x_axis=config_dict.get("x_axis", ""),
+            y_axis=config_dict.get("y_axis", ""),
+            chart_type=config_dict.get("chart_type", ""),
+            data_source=config_dict.get("data_source", ""),
+            filters=config_dict.get("filters", {})
+        )
 
-# === ADVANCED CHART CONFIGURATIONS ===
-# You can also define more complex chart configurations here
-
-ADVANCED_CHARTS = [
-    # Example of a more complex chart configuration
-    # {
-    #     "name": "Advanced Time Series",
-    #     "viz_type": "line",
-    #     "custom_params": {
-    #         "show_markers": True,
-    #         "line_interpolation": "cardinal"
-    #     }
-    # }
-]
-
-# Chart type reference for easy modification:
-"""
-Common viz_types:
-- line: Line chart
-- bar: Bar chart  
-- pie: Pie chart
-- table: Table view
-- big_number_total: Big number display
-- area: Area chart
-- scatter: Scatter plot
-- histogram: Histogram
-- box_plot: Box plot
-- heatmap: Heat map
-- treemap: Tree map
-- sankey: Sankey diagram
-- gauge: Gauge chart
-- bullet: Bullet chart
-"""
+    @staticmethod
+    def from_json(config_json: str) -> 'ChartConfig':
+        config_dict = json.loads(config_json)
+        return ChartConfig.from_dict(config_dict)
