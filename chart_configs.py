@@ -1,5 +1,4 @@
-# === MAIN CONFIGURATION FILE ===
-# This is the primary file you'll modify when creating different charts
+# === SIMPLE CHART CONFIGURATION FILE ===
 
 # Superset connection settings
 SUPERSET_CONFIG = {
@@ -9,80 +8,80 @@ SUPERSET_CONFIG = {
 }
 
 # Dataset and dashboard settings
-DATASET_ID = 1  # Your dataset ID
-DASHBOARD_ID = 1  # Set to specific dashboard ID to use existing dashboard, or None to create new
-DASHBOARD_TITLE = "Auto Generated Dashboard"
-
-# Operation mode settings
-UPDATE_MODE = True  # If True, updates existing charts instead of creating duplicates
-AUTO_UPDATE_DASHBOARD = True  # If True, automatically adds charts to dashboard
+DATASET_ID = 1
+DASHBOARD_TITLE = "Analytics Dashboard"
+UPDATE_MODE = True
 
 # === CHART CONFIGURATIONS ===
-# Add, remove, or modify charts here
-CHARTS_CONFIG = [
-    {
-        "name": "Record Count Over Time",
-        "viz_type": "line",
-        "metric": "COUNT",
-        "groupby_type": "date"
-    },
-    {
-        "name": "Data Distribution",
-        "viz_type": "bar", 
-        "metric": "COUNT",
-        "groupby_type": "category"
-    },
+
+# Big Number Charts (known to work)
+BIG_NUMBER_CHARTS = [
     {
         "name": "Total Records",
         "viz_type": "big_number_total",
-        "metric": "COUNT",
-        "groupby_type": None
-    },
+        "metric": "count"
+    }
+]
+
+# Line Charts - Time Series like the screenshot
+LINE_CHARTS = [
     {
-        "name": "Data Breakdown",
-        "viz_type": "pie",
-        "metric": "COUNT",
+        "name": "NPS Score Trend",
+        "viz_type": "echarts_timeseries",
+        "metric": "nps_score",  # Will become SUM(nps_score)
+        "custom_params": {
+            "show_markers": False,
+            "line_interpolation": "linear"
+        }
+    }
+]
+
+# Simple Line Charts - try different approaches
+SIMPLE_LINE = [
+    {
+        "name": "Simple Time Series",
+        "viz_type": "echarts_timeseries",
+        "metric": "count"
+    }
+]
+
+# Bar Charts
+BAR_CHARTS = [
+    {
+        "name": "Records by Category",
+        "viz_type": "dist_bar",
+        "metric": "count",
         "groupby_type": "category"
-    },
-    # Add more chart configurations here as needed
-    # {
-    #     "name": "Custom Chart Name",
-    #     "viz_type": "table",  # or any other supported viz type
-    #     "metric": "COUNT",
-    #     "groupby_type": "category"  # or "date" or None
-    # },
+    }
 ]
 
-# === ADVANCED CHART CONFIGURATIONS ===
-# You can also define more complex chart configurations here
-
-ADVANCED_CHARTS = [
-    # Example of a more complex chart configuration
-    # {
-    #     "name": "Advanced Time Series",
-    #     "viz_type": "line",
-    #     "custom_params": {
-    #         "show_markers": True,
-    #         "line_interpolation": "cardinal"
-    #     }
-    # }
+# Bubble Charts
+BUBBLE_CHARTS = [
+    {
+        "name": "Value Analysis",
+        "viz_type": "bubble",
+        "metric": "count",
+        "custom_params": {
+            "x": "column1",  # Replace with actual column name
+            "y": "column2",  # Replace with actual column name
+            "size": "count"
+        }
+    }
 ]
 
-# Chart type reference for easy modification:
-"""
-Common viz_types:
-- line: Line chart
-- bar: Bar chart  
-- pie: Pie chart
-- table: Table view
-- big_number_total: Big number display
-- area: Area chart
-- scatter: Scatter plot
-- histogram: Histogram
-- box_plot: Box plot
-- heatmap: Heat map
-- treemap: Tree map
-- sankey: Sankey diagram
-- gauge: Gauge chart
-- bullet: Bullet chart
-"""
+# Default charts to create
+CHARTS_CONFIG = BIG_NUMBER_CHARTS + SIMPLE_LINE + BAR_CHARTS
+
+# Test configurations
+TEST_BIG_NUMBER = [{"name": "Test Big Number", "viz_type": "big_number_total", "metric": "count"}]
+TEST_LINE = [{"name": "Test Time Series", "viz_type": "echarts_timeseries", "metric": "nps_score"}]
+TEST_BAR = [{"name": "Test Bar", "viz_type": "dist_bar", "metric": "count", "groupby_type": "category"}]
+TEST_BUBBLE = [{"name": "Test Bubble", "viz_type": "bubble", "metric": "count", "custom_params": {"x": "col1", "y": "col2", "size": "count"}}]
+
+def validate_all_configs(charts_config):
+    """Simple validation"""
+    for config in charts_config:
+        if "name" not in config or "viz_type" not in config:
+            print(f"❌ Invalid config: {config}")
+            return False
+    return True
