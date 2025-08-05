@@ -39,9 +39,22 @@ LINE_CHARTS = [
 # Simple Line Charts - try different approaches
 SIMPLE_LINE = [
     {
-        "name": "Simple Time Series",
-        "viz_type": "echarts_timeseries",
-        "metric": "count"
+        "name": "NPS Trend",
+        "viz_type": "line",
+        "metric_col": "nps_score",
+        "metric": "SUM"
+    },
+    {
+        "name": "Average CSAT",
+        "viz_type": "line", 
+        "metric_col": "csat_score",
+        "metric": "AVG"
+    },
+    {
+        "name": "Count Records",
+        "viz_type": "line",
+        "metric_col": "csat_score",  # Any column for COUNT
+        "metric": "COUNT"
     }
 ]
 
