@@ -1,5 +1,6 @@
 import json
 from auth import SupersetAuth
+from dashboard_manager import SupersetDashboardManager
 
 class SupersetChartCreator:
     def __init__(self, auth_instance):
@@ -8,6 +9,8 @@ class SupersetChartCreator:
         self.headers = auth_instance.headers
         self.superset_url = auth_instance.superset_url
         self._existing_charts = None
+        # Initialize dashboard manager
+        self.dashboard_manager = SupersetDashboardManager(auth_instance)
     
     def select_column(self, columns, kind="date"):
         """Smart column selection based on column names"""
@@ -19,57 +22,454 @@ class SupersetChartCreator:
             for col in columns:
                 if not any(k in col.lower() for k in ["id", "amount", "count"]):
                     return col
+        elif kind == "numeric":
+            for col in columns:
+                if any(k in col.lower() for k in ["amount", "value", "price", "score", "count", "number"]):
+                    return col
         return None
-    
-    def create_chart(self, chart_config, dataset_id, dataset_info):
-        """Create a single chart based on configuration"""
-        viz_type = chart_config["viz_type"]
-        groupby_col = None
 
-        if chart_config["groupby_type"] == "date":
-            groupby_col = self.select_column(dataset_info["columns"], kind="date")
-        elif chart_config["groupby_type"] == "category":
-            groupby_col = self.select_column(dataset_info["columns"], kind="category")
+    # === CHART TYPE SPECIFIC METHODS ===
 
-        metric_obj = {
-            "expressionType": "SQL",
-            "sqlExpression": "COUNT(*)",
-            "label": "COUNT"
+    def _build_big_number_chart(self, chart_config, dataset_id, dataset_info):
+        """Build payload specifically for big_number_total charts"""
+        chart_name = chart_config["name"]
+        metric = chart_config.get("metric", "count")
+        
+        # Big number specific form_data
+        form_data = {
+            "datasource": f"{dataset_id}__table",
+            "viz_type": "big_number_total",
+            "metric": metric,
+            "adhoc_filters": [
+                {
+                    "clause": "WHERE",
+                    "subject": "date" if self.select_column(dataset_info["columns"], "date") else None,
+                    "operator": "TEMPORAL_RANGE",
+                    "comparator": "No filter",
+                    "expressionType": "SIMPLE"
+                }
+            ] if self.select_column(dataset_info["columns"], "date") else [],
+            "header_font_size": chart_config.get("custom_params", {}).get("header_font_size", 0.4),
+            "subheader_font_size": chart_config.get("custom_params", {}).get("subheader_font_size", 0.15),
+            "y_axis_format": chart_config.get("custom_params", {}).get("y_axis_format", "SMART_NUMBER"),
+            "time_format": chart_config.get("custom_params", {}).get("time_format", "smart_date"),
+            "extra_form_data": {},
+            "dashboards": []
         }
-
+        
+        # Add any additional custom params
+        if "custom_params" in chart_config:
+            for key, value in chart_config["custom_params"].items():
+                if key not in form_data:  # Don't override existing keys
+                    form_data[key] = value
+        
+        # Big number specific query_context
         query_context = {
             "datasource": {"id": dataset_id, "type": "table"},
+            "force": False,
             "queries": [
                 {
-                    "metrics": [metric_obj],
-                    "groupby": [groupby_col] if groupby_col else [],
-                    "filters": [],
-                    "time_range": "No filter",
-                    "orderby": [["COUNT", False]]
+                    "filters": [
+                        {
+                            "col": self.select_column(dataset_info["columns"], "date") or "date",
+                            "op": "TEMPORAL_RANGE",
+                            "val": "No filter"
+                        }
+                    ] if self.select_column(dataset_info["columns"], "date") else [],
+                    "extras": {"having": "", "where": ""},
+                    "applied_time_extras": {},
+                    "columns": [],
+                    "metrics": [metric],
+                    "annotation_layers": [],
+                    "series_limit": 0,
+                    "order_desc": True,
+                    "url_params": {},
+                    "custom_params": {},
+                    "custom_form_data": {}
                 }
             ],
+            "form_data": form_data.copy(),
             "result_format": "json",
             "result_type": "full"
         }
-
-        params = {
-            "metrics": [metric_obj],
-            "groupby": [groupby_col] if groupby_col else [],
-            "time_range": "No filter",
-            "show_legend": True,
-            "rich_tooltip": True,
-            "slice_name": chart_config["name"]
-        }
-
-        payload = {
-            "slice_name": chart_config["name"],
-            "viz_type": viz_type,
+        
+        # Add required fields to form_data for query_context
+        query_context["form_data"].update({
+            "force": False,
+            "result_format": "json",
+            "result_type": "full"
+        })
+        
+        return {
+            "slice_name": chart_name,
+            "viz_type": "big_number_total",
             "datasource_id": dataset_id,
             "datasource_type": "table",
-            "params": json.dumps(params),
+            "params": json.dumps(form_data),
             "query_context": json.dumps(query_context)
         }
 
+    def _build_line_chart(self, chart_config, dataset_id, dataset_info):
+        """Build payload specifically for line charts - based on working time series example"""
+        chart_name = chart_config["name"]
+        
+        # Use the metric from config or default to count
+        metric = chart_config.get("metric", "count")
+        
+        # Get date column
+        date_col = self.select_column(dataset_info["columns"], "date")
+        if not date_col:
+            print(f"⚠️ No date column found. Available columns: {dataset_info['columns']}")
+            date_col = "date"  # fallback
+        
+        print(f"📅 Using date column: {date_col} with metric: {metric}")
+        
+        # Line chart form_data based on the working example
+        form_data = {
+            "datasource": f"{dataset_id}__table",
+            "viz_type": "echarts_timeseries",  # Use the working viz type from screenshot
+            "metrics": [f"SUM({metric})" if metric != "count" else "COUNT(*)"],
+            "groupby": [],  # Empty for time series
+            "adhoc_filters": [
+                {
+                    "clause": "WHERE",
+                    "subject": date_col,
+                    "operator": "TEMPORAL_RANGE",
+                    "comparator": "No filter",
+                    "expressionType": "SIMPLE"
+                }
+            ],
+            "time_range": "No filter",
+            "granularity_sqla": date_col,
+            "time_grain_sqla": "P1D",  # Daily aggregation
+            "show_legend": True,
+            "rich_tooltip": True,
+            "show_markers": False,
+            "line_interpolation": "linear",
+            "contribution_mode": None,
+            "order_desc": False,
+            "row_limit": 10000,
+            "extra_form_data": {},
+            "dashboards": []
+        }
+        
+        # Add any custom params
+        if "custom_params" in chart_config:
+            form_data.update(chart_config["custom_params"])
+        
+        # Query context for time series
+        query_context = {
+            "datasource": {"id": dataset_id, "type": "table"},
+            "force": False,
+            "queries": [
+                {
+                    "filters": [
+                        {
+                            "col": date_col,
+                            "op": "TEMPORAL_RANGE",
+                            "val": "No filter"
+                        }
+                    ],
+                    "extras": {"having": "", "where": ""},
+                    "applied_time_extras": {},
+                    "columns": [],
+                    "metrics": form_data["metrics"],
+                    "groupby": [],
+                    "granularity": date_col,
+                    "annotation_layers": [],
+                    "row_limit": 10000,
+                    "series_limit": 0,
+                    "order_desc": False,
+                    "url_params": {},
+                    "custom_params": {},
+                    "custom_form_data": {}
+                }
+            ],
+            "form_data": form_data.copy(),
+            "result_format": "json",
+            "result_type": "full"
+        }
+        
+        query_context["form_data"].update({
+            "force": False,
+            "result_format": "json",
+            "result_type": "full"
+        })
+        
+        return {
+            "slice_name": chart_name,
+            "viz_type": "echarts_timeseries",
+            "datasource_id": dataset_id,
+            "datasource_type": "table",
+            "params": json.dumps(form_data),
+            "query_context": json.dumps(query_context)
+        }
+
+    def _build_bar_chart(self, chart_config, dataset_id, dataset_info):
+        """Build payload specifically for bar charts"""
+        chart_name = chart_config["name"]
+        metric = chart_config.get("metric", "count")
+        
+        # Get groupby column
+        groupby_col = None
+        if chart_config.get("groupby_type") == "date":
+            groupby_col = self.select_column(dataset_info["columns"], "date")
+        elif chart_config.get("groupby_type") == "category":
+            groupby_col = self.select_column(dataset_info["columns"], "category")
+        
+        # Bar chart specific form_data
+        form_data = {
+            "datasource": f"{dataset_id}__table",
+            "viz_type": "dist_bar",
+            "metrics": [metric] if isinstance(metric, str) else metric,
+            "groupby": [groupby_col] if groupby_col else [],
+            "columns": [],
+            "adhoc_filters": [],
+            "time_range": "No filter",
+            "row_limit": chart_config.get("custom_params", {}).get("row_limit", 10),
+            "show_legend": chart_config.get("custom_params", {}).get("show_legend", True),
+            "rich_tooltip": chart_config.get("custom_params", {}).get("rich_tooltip", True),
+            "show_bar_value": chart_config.get("custom_params", {}).get("show_bar_value", False),
+            "bar_stacked": chart_config.get("custom_params", {}).get("bar_stacked", False),
+            "order_bars": chart_config.get("custom_params", {}).get("order_bars", False),
+            "y_axis_format": chart_config.get("custom_params", {}).get("y_axis_format", "SMART_NUMBER"),
+            "bottom_margin": "auto",
+            "x_ticks_layout": "auto",
+            "extra_form_data": {},
+            "dashboards": []
+        }
+        
+        # Add any additional custom params
+        if "custom_params" in chart_config:
+            for key, value in chart_config["custom_params"].items():
+                if key not in form_data:
+                    form_data[key] = value
+        
+        # Bar chart specific query_context
+        query_context = {
+            "datasource": {"id": dataset_id, "type": "table"},
+            "force": False,
+            "queries": [
+                {
+                    "filters": [],
+                    "extras": {"having": "", "where": ""},
+                    "applied_time_extras": {},
+                    "columns": form_data["columns"],
+                    "metrics": form_data["metrics"],
+                    "groupby": form_data["groupby"],
+                    "annotation_layers": [],
+                    "row_limit": form_data["row_limit"],
+                    "series_limit": 0,
+                    "order_desc": True,
+                    "url_params": {},
+                    "custom_params": {},
+                    "custom_form_data": {},
+                    "orderby": [[metric, False]] if groupby_col else []
+                }
+            ],
+            "form_data": form_data.copy(),
+            "result_format": "json",
+            "result_type": "full"
+        }
+        
+        query_context["form_data"].update({
+            "force": False,
+            "result_format": "json",
+            "result_type": "full"
+        })
+        
+        return {
+            "slice_name": chart_name,
+            "viz_type": "dist_bar",
+            "datasource_id": dataset_id,
+            "datasource_type": "table",
+            "params": json.dumps(form_data),
+            "query_context": json.dumps(query_context)
+        }
+
+    def _build_bubble_chart(self, chart_config, dataset_id, dataset_info):
+        """Build payload specifically for bubble charts"""
+        chart_name = chart_config["name"]
+        metric = chart_config.get("metric", "count")
+        
+        # Get x and y columns (numeric preferred)
+        x_col = chart_config.get("custom_params", {}).get("x") or self.select_column(dataset_info["columns"], "numeric")
+        y_col = chart_config.get("custom_params", {}).get("y") or self.select_column(dataset_info["columns"], "numeric")
+        size_metric = chart_config.get("custom_params", {}).get("size", metric)
+        
+        # Series column for grouping bubbles
+        series_col = chart_config.get("custom_params", {}).get("series") or self.select_column(dataset_info["columns"], "category")
+        
+        # Bubble chart specific form_data
+        form_data = {
+            "datasource": f"{dataset_id}__table",
+            "viz_type": "bubble",
+            "x": x_col,
+            "y": y_col,
+            "size": size_metric,
+            "series": series_col,
+            "entity": chart_config.get("custom_params", {}).get("entity", ""),
+            "adhoc_filters": [],
+            "time_range": "No filter",
+            "row_limit": chart_config.get("custom_params", {}).get("row_limit", 100),
+            "show_legend": chart_config.get("custom_params", {}).get("show_legend", True),
+            "max_bubble_size": chart_config.get("custom_params", {}).get("max_bubble_size", 25),
+            "color_scheme": chart_config.get("custom_params", {}).get("color_scheme", "supersetColors"),
+            "extra_form_data": {},
+            "dashboards": []
+        }
+        
+        # Add any additional custom params
+        if "custom_params" in chart_config:
+            for key, value in chart_config["custom_params"].items():
+                if key not in form_data:
+                    form_data[key] = value
+        
+        # Bubble chart specific query_context
+        query_context = {
+            "datasource": {"id": dataset_id, "type": "table"},
+            "force": False,
+            "queries": [
+                {
+                    "filters": [],
+                    "extras": {"having": "", "where": ""},
+                    "applied_time_extras": {},
+                    "columns": [col for col in [x_col, y_col, series_col] if col],
+                    "metrics": [size_metric] if isinstance(size_metric, str) else [size_metric],
+                    "groupby": [series_col] if series_col else [],
+                    "annotation_layers": [],
+                    "row_limit": form_data["row_limit"],
+                    "series_limit": 0,
+                    "order_desc": True,
+                    "url_params": {},
+                    "custom_params": {},
+                    "custom_form_data": {}
+                }
+            ],
+            "form_data": form_data.copy(),
+            "result_format": "json",
+            "result_type": "full"
+        }
+        
+        query_context["form_data"].update({
+            "force": False,
+            "result_format": "json",
+            "result_type": "full"
+        })
+        
+        return {
+            "slice_name": chart_name,
+            "viz_type": "bubble",
+            "datasource_id": dataset_id,
+            "datasource_type": "table",
+            "params": json.dumps(form_data),
+            "query_context": json.dumps(query_context)
+        }
+
+    # === MAIN CHART BUILDING METHOD ===
+    
+    def _build_chart_payload(self, chart_config, dataset_id, dataset_info):
+        """Route to specific chart building method based on viz_type"""
+        viz_type = chart_config["viz_type"]
+        
+        print(f"🔧 Building {viz_type} chart: {chart_config['name']}")
+        
+        # Route to specific method based on chart type
+        if viz_type == "big_number_total":
+            return self._build_big_number_chart(chart_config, dataset_id, dataset_info)
+        elif viz_type == "line":
+            return self._build_line_chart(chart_config, dataset_id, dataset_info)
+        elif viz_type in ["dist_bar", "bar"]:
+            return self._build_bar_chart(chart_config, dataset_id, dataset_info)
+        elif viz_type == "bubble":
+            return self._build_bubble_chart(chart_config, dataset_id, dataset_info)
+        else:
+            print(f"⚠️ Unsupported chart type: {viz_type}. Using generic method.")
+            return self._build_generic_chart(chart_config, dataset_id, dataset_info)
+    
+    def _build_generic_chart(self, chart_config, dataset_id, dataset_info):
+        """Fallback method for unsupported chart types"""
+        chart_name = chart_config["name"]
+        viz_type = chart_config["viz_type"]
+        metric = chart_config.get("metric", "count")
+        
+        # Generic form_data
+        form_data = {
+            "datasource": f"{dataset_id}__table",
+            "viz_type": viz_type,
+            "slice_name": chart_name,
+            "adhoc_filters": [],
+            "time_range": "No filter",
+            "dashboards": []
+        }
+        
+        # Add metric
+        if viz_type == "big_number_total":
+            form_data["metric"] = metric
+        else:
+            form_data["metrics"] = [metric] if isinstance(metric, str) else metric
+        
+        # Add groupby if specified
+        if chart_config.get("groupby_type"):
+            if chart_config["groupby_type"] == "date":
+                groupby_col = self.select_column(dataset_info["columns"], "date")
+                if groupby_col:
+                    form_data["groupby"] = [groupby_col]
+            elif chart_config["groupby_type"] == "category":
+                groupby_col = self.select_column(dataset_info["columns"], "category")
+                if groupby_col:
+                    form_data["groupby"] = [groupby_col]
+        
+        # Add custom params
+        if "custom_params" in chart_config:
+            form_data.update(chart_config["custom_params"])
+        
+        # Generic query_context
+        query_context = {
+            "datasource": {"id": dataset_id, "type": "table"},
+            "force": False,
+            "queries": [
+                {
+                    "filters": [],
+                    "extras": {"having": "", "where": ""},
+                    "applied_time_extras": {},
+                    "columns": [],
+                    "metrics": form_data.get("metrics", [form_data.get("metric", metric)]),
+                    "groupby": form_data.get("groupby", []),
+                    "annotation_layers": [],
+                    "series_limit": 0,
+                    "order_desc": True,
+                    "url_params": {},
+                    "custom_params": {},
+                    "custom_form_data": {}
+                }
+            ],
+            "form_data": form_data.copy(),
+            "result_format": "json",
+            "result_type": "full"
+        }
+        
+        query_context["form_data"].update({
+            "force": False,
+            "result_format": "json",
+            "result_type": "full"
+        })
+        
+        return {
+            "slice_name": chart_name,
+            "viz_type": viz_type,
+            "datasource_id": dataset_id,
+            "datasource_type": "table",
+            "params": json.dumps(form_data),
+            "query_context": json.dumps(query_context)
+        }
+
+    # === EXISTING METHODS (unchanged) ===
+    
+    def create_chart(self, chart_config, dataset_id, dataset_info):
+        """Create a single chart based on configuration"""
+        payload = self._build_chart_payload(chart_config, dataset_id, dataset_info)
+        print(f"[DEBUG] Chart payload for '{chart_config['name']}':\n{json.dumps(payload, indent=2)}")
         resp = self.session.post(f"{self.superset_url}/api/v1/chart/", headers=self.headers, json=payload)
         if resp.status_code == 201:
             chart_id = resp.json()["id"]
@@ -79,88 +479,17 @@ class SupersetChartCreator:
             print(f"❌ Failed to create chart {chart_config['name']}: {resp.status_code} - {resp.text}")
             return None
     
-    def get_existing_dashboards(self):
-        """Get all existing dashboards"""
-        resp = self.session.get(f"{self.superset_url}/api/v1/dashboard/", headers=self.headers)
+    def update_chart(self, chart_id, chart_config, dataset_id, dataset_info):
+        """Update an existing chart"""
+        payload = self._build_chart_payload(chart_config, dataset_id, dataset_info)
+        print(f"[DEBUG] Chart payload for '{chart_config['name']}':\n{json.dumps(payload, indent=2)}")
+        resp = self.session.put(f"{self.superset_url}/api/v1/chart/{chart_id}", headers=self.headers, json=payload)
         if resp.status_code == 200:
-            dashboards = resp.json()["result"]
-            dashboard_dict = {
-                dashboard["dashboard_title"]: {
-                    "id": dashboard["id"],
-                    "slug": dashboard["slug"]
-                } for dashboard in dashboards
-            }
-            
-            # Debug: Show existing dashboards
-            print(f"📋 Found {len(dashboard_dict)} existing dashboards:")
-            for title, info in dashboard_dict.items():
-                print(f"   - '{title}' (ID: {info['id']}, slug: '{info['slug']}')")
-            
-            return dashboard_dict
+            print(f"✅ Updated chart {chart_config['name']} (ID: {chart_id})")
+            return chart_id
         else:
-            print(f"❌ Failed to fetch existing dashboards: {resp.status_code}")
-            return {}
-
-    def create_dashboard(self, title="Auto Dashboard"):
-        """Create a new dashboard or return existing one"""
-        # Check if dashboard with this title already exists
-        existing_dashboards = self.get_existing_dashboards()
-        
-        if title in existing_dashboards:
-            dashboard_id = existing_dashboards[title]["id"]
-            print(f"✅ Found existing dashboard '{title}' (ID: {dashboard_id})")
-            return dashboard_id
-        
-        # Get all existing slugs to ensure uniqueness
-        resp = self.session.get(f"{self.superset_url}/api/v1/dashboard/", headers=self.headers)
-        existing_slugs = []
-        if resp.status_code == 200:
-            dashboards = resp.json()["result"]
-            existing_slugs = [d["slug"] for d in dashboards if d.get("slug")]
-        
-        # Generate unique slug
-        base_slug = title.lower().replace(" ", "-").replace("_", "-")
-        # Remove any special characters that might cause issues
-        import re
-        base_slug = re.sub(r'[^a-z0-9\-]', '', base_slug)
-        
-        slug = base_slug
-        counter = 1
-        
-        # Check if slug exists and make it unique
-        while slug in existing_slugs:
-            slug = f"{base_slug}-{counter}"
-            counter += 1
-        
-        print(f"🔄 Creating dashboard with slug: '{slug}'")
-        
-        payload = {
-            "dashboard_title": title,
-            "slug": slug,
-            "published": True
-        }
-        
-        resp = self.session.post(f"{self.superset_url}/api/v1/dashboard/", headers=self.headers, json=payload)
-        if resp.status_code == 201:
-            dashboard_id = resp.json()["id"]
-            print(f"✅ Created dashboard '{title}' (ID: {dashboard_id}, slug: {slug})")
-            return dashboard_id
-        else:
-            print(f"❌ Failed to create dashboard: {resp.status_code} - {resp.text}")
-            # Try with a timestamp-based slug as last resort
-            import time
-            timestamp_slug = f"{base_slug}-{int(time.time())}"
-            print(f"🔄 Retrying with timestamp slug: '{timestamp_slug}'")
-            
-            payload["slug"] = timestamp_slug
-            resp = self.session.post(f"{self.superset_url}/api/v1/dashboard/", headers=self.headers, json=payload)
-            if resp.status_code == 201:
-                dashboard_id = resp.json()["id"]
-                print(f"✅ Created dashboard '{title}' (ID: {dashboard_id}, slug: {timestamp_slug})")
-                return dashboard_id
-            else:
-                print(f"❌ Still failed to create dashboard: {resp.status_code} - {resp.text}")
-                return None
+            print(f"❌ Failed to update chart {chart_config['name']}: {resp.status_code} - {resp.text}")
+            return None
     
     def get_existing_charts(self, dataset_id=None):
         """Get all existing charts, optionally filtered by dataset"""
@@ -171,7 +500,7 @@ class SupersetChartCreator:
                 self._existing_charts = {
                     chart["slice_name"]: {
                         "id": chart["id"],
-                        "datasource_id": chart["datasource_id"]
+                        "datasource_id": self._extract_dataset_id_from_chart(chart)
                     } for chart in charts
                 }
             else:
@@ -183,62 +512,11 @@ class SupersetChartCreator:
                    if info["datasource_id"] == dataset_id}
         return self._existing_charts
     
-    def update_chart(self, chart_id, chart_config, dataset_id, dataset_info):
-        """Update an existing chart"""
-        viz_type = chart_config["viz_type"]
-        groupby_col = None
-
-        if chart_config["groupby_type"] == "date":
-            groupby_col = self.select_column(dataset_info["columns"], kind="date")
-        elif chart_config["groupby_type"] == "category":
-            groupby_col = self.select_column(dataset_info["columns"], kind="category")
-
-        metric_obj = {
-            "expressionType": "SQL",
-            "sqlExpression": "COUNT(*)",
-            "label": "COUNT"
-        }
-
-        query_context = {
-            "datasource": {"id": dataset_id, "type": "table"},
-            "queries": [
-                {
-                    "metrics": [metric_obj],
-                    "groupby": [groupby_col] if groupby_col else [],
-                    "filters": [],
-                    "time_range": "No filter",
-                    "orderby": [["COUNT", False]]
-                }
-            ],
-            "result_format": "json",
-            "result_type": "full"
-        }
-
-        params = {
-            "metrics": [metric_obj],
-            "groupby": [groupby_col] if groupby_col else [],
-            "time_range": "No filter",
-            "show_legend": True,
-            "rich_tooltip": True,
-            "slice_name": chart_config["name"]
-        }
-
-        payload = {
-            "slice_name": chart_config["name"],
-            "viz_type": viz_type,
-            "datasource_id": dataset_id,
-            "datasource_type": "table",
-            "params": json.dumps(params),
-            "query_context": json.dumps(query_context)
-        }
-
-        resp = self.session.put(f"{self.superset_url}/api/v1/chart/{chart_id}", headers=self.headers, json=payload)
-        if resp.status_code == 200:
-            print(f"✅ Updated chart {chart_config['name']} (ID: {chart_id})")
-            return chart_id
-        else:
-            print(f"❌ Failed to update chart {chart_config['name']}: {resp.status_code} - {resp.text}")
-            return None
+    def _extract_dataset_id_from_chart(self, chart):
+        """Extract dataset ID from chart object in listing"""
+        if "datasource_id" in chart:
+            return chart["datasource_id"]
+        return None
 
     def create_or_update_chart(self, chart_config, dataset_id, dataset_info, existing_charts):
         """Create a new chart or update existing one based on name"""
@@ -252,161 +530,7 @@ class SupersetChartCreator:
             print(f"➕ Creating new chart '{chart_name}'...")
             return self.create_chart(chart_config, dataset_id, dataset_info)
 
-    def get_dashboard_charts(self, dashboard_id):
-        """Get all charts in a dashboard"""
-        resp = self.session.get(f"{self.superset_url}/api/v1/dashboard/{dashboard_id}", headers=self.headers)
-        if resp.status_code == 200:
-            dashboard_data = resp.json()["result"]
-            # Extract chart IDs from the dashboard's JSON metadata
-            charts = []
-            if "json_metadata" in dashboard_data and dashboard_data["json_metadata"]:
-                try:
-                    metadata = json.loads(dashboard_data["json_metadata"])
-                    charts = metadata.get("native_filter_configuration", [])
-                except:
-                    pass
-            
-            # Also get from slices relationship
-            if "slices" in dashboard_data:
-                chart_ids = [slice_info["id"] for slice_info in dashboard_data["slices"]]
-                return chart_ids
-            return []
-        return []
-
-    def update_dashboard_charts(self, dashboard_id, chart_ids):
-        """Add charts to dashboard using the correct API approach"""
-        if not chart_ids:
-            print("⚠️ No chart IDs provided for dashboard update")
-            return False
-            
-        # Get current dashboard info
-        resp = self.session.get(f"{self.superset_url}/api/v1/dashboard/{dashboard_id}", headers=self.headers)
-        if resp.status_code != 200:
-            print(f"❌ Failed to get dashboard info: {resp.status_code}")
-            return False
-        
-        dashboard_data = resp.json()["result"]
-        current_chart_ids = [slice_info["id"] for slice_info in dashboard_data.get("slices", [])]
-        
-        # Filter out charts that are already in the dashboard
-        new_chart_ids = [cid for cid in chart_ids if cid not in current_chart_ids]
-        
-        if not new_chart_ids:
-            print("✅ All charts are already in the dashboard")
-            return True
-        
-        # Method 1: Try the dashboard export/import approach
-        success = self._add_charts_to_dashboard_v1(dashboard_id, new_chart_ids, dashboard_data)
-        
-        if not success:
-            # Method 2: Try individual chart updates
-            print("🔄 Trying alternative method...")
-            success = self._add_charts_to_dashboard_v2(dashboard_id, new_chart_ids)
-        
-        return success
-    
-    def _add_charts_to_dashboard_v1(self, dashboard_id, chart_ids, dashboard_data):
-        """Method 1: Update dashboard directly with position metadata"""
-        try:
-            # Parse existing JSON metadata
-            json_metadata = dashboard_data.get("json_metadata", "{}")
-            if isinstance(json_metadata, str):
-                json_metadata = json.loads(json_metadata) if json_metadata else {}
-            
-            # Get current position metadata
-            position_json = dashboard_data.get("position_json", "{}")
-            if isinstance(position_json, str):
-                position_json = json.loads(position_json) if position_json else {}
-            
-            # Add new charts to position (simple grid layout)
-            next_row = 0
-            for key, value in position_json.items():
-                if isinstance(value, dict) and "meta" in value and value["meta"].get("chartId"):
-                    next_row = max(next_row, value.get("y", 0) + value.get("h", 4))
-            
-            # Add new charts to position_json
-            for i, chart_id in enumerate(chart_ids):
-                chart_key = f"CHART-{chart_id}"
-                position_json[chart_key] = {
-                    "children": [],
-                    "id": chart_key,
-                    "meta": {
-                        "chartId": chart_id,
-                        "height": 50,
-                        "sliceName": f"Chart {chart_id}",
-                        "width": 4
-                    },
-                    "type": "CHART",
-                    "x": (i % 3) * 4,  # 3 charts per row
-                    "y": next_row + (i // 3) * 6,
-                    "w": 4,
-                    "h": 6
-                }
-            
-            # Update dashboard
-            payload = {
-                "dashboard_title": dashboard_data["dashboard_title"],
-                "slug": dashboard_data.get("slug", ""),
-                "published": dashboard_data.get("published", True),
-                "json_metadata": json.dumps(json_metadata),
-                "position_json": json.dumps(position_json)
-            }
-            
-            resp = self.session.put(f"{self.superset_url}/api/v1/dashboard/{dashboard_id}", headers=self.headers, json=payload)
-            if resp.status_code == 200:
-                print(f"✅ Added {len(chart_ids)} charts to dashboard using direct update")
-                return True
-            else:
-                print(f"⚠️ Direct dashboard update failed: {resp.status_code} - {resp.text}")
-                return False
-                
-        except Exception as e:
-            print(f"⚠️ Direct dashboard update failed: {e}")
-            return False
-    
-    def _add_charts_to_dashboard_v2(self, dashboard_id, chart_ids):
-        """Method 2: Use dashboard favorite/relationship endpoints"""
-        success_count = 0
-        
-        for chart_id in chart_ids:
-            try:
-                # Try using the dashboard relationship endpoint
-                payload = {"dashboard_ids": [dashboard_id]}
-                resp = self.session.put(
-                    f"{self.superset_url}/api/v1/chart/{chart_id}/dashboards", 
-                    headers=self.headers, 
-                    json=payload
-                )
-                
-                if resp.status_code in [200, 201]:
-                    success_count += 1
-                    print(f"✅ Added chart {chart_id} to dashboard")
-                else:
-                    # Try alternative endpoint
-                    resp2 = self.session.post(
-                        f"{self.superset_url}/api/v1/dashboard/{dashboard_id}/charts",
-                        headers=self.headers,
-                        json={"chart_id": chart_id}
-                    )
-                    
-                    if resp2.status_code in [200, 201]:
-                        success_count += 1
-                        print(f"✅ Added chart {chart_id} to dashboard (alt method)")
-                    else:
-                        print(f"⚠️ Failed to add chart {chart_id}: {resp.status_code} - {resp.text}")
-            
-            except Exception as e:
-                print(f"⚠️ Error adding chart {chart_id}: {e}")
-        
-        if success_count > 0:
-            print(f"✅ Successfully added {success_count} charts to dashboard")
-            return True
-        else:
-            print("❌ Could not add charts to dashboard automatically")
-            print(f"💡 Please manually add charts {chart_ids} to dashboard {dashboard_id}")
-            return False
-
-    def create_multiple_charts(self, charts_config, dataset_id, dashboard_id=None, update_mode=True):
+    def create_multiple_charts(self, charts_config, dataset_id, update_mode=True):
         """Create or update multiple charts from configuration list"""
         dataset_info = self.auth.get_dataset_info(dataset_id)
         if not dataset_info:
@@ -426,9 +550,186 @@ class SupersetChartCreator:
             if chart_id:
                 processed_charts.append(chart_id)
         
-        # Update dashboard if provided
-        if dashboard_id and processed_charts:
-            print(f"\n🔄 Updating dashboard {dashboard_id} with charts...")
-            self.update_dashboard_charts(dashboard_id, processed_charts)
-        
         return processed_charts
+
+    def process_charts(self, charts_config, dataset_id, dashboard_title=None, update_mode=True):
+        """Main processing method - creates charts and optionally adds them to dashboard"""
+        print(f"📊 Processing {len(charts_config)} charts...")
+        
+        # Create/update charts
+        chart_ids = self.create_multiple_charts(charts_config, dataset_id, update_mode)
+        
+        if not chart_ids:
+            print("❌ No charts were created successfully")
+            return []
+        
+        print(f"✅ Successfully processed {len(chart_ids)} charts")
+        
+        # If dashboard title provided, create dashboard and add charts
+        if dashboard_title:
+            print(f"\n🏗️ Creating/updating dashboard '{dashboard_title}'...")
+            dashboard_id = self.dashboard_manager.create_dashboard(dashboard_title)
+            
+            if dashboard_id:
+                print(f"🔗 Adding charts to dashboard...")
+                self.dashboard_manager.add_charts_to_dashboard(dashboard_id, chart_ids)
+            else:
+                print("⚠️ Dashboard creation failed - charts created but not added to dashboard")
+        else:
+            print("ℹ️ No dashboard specified - charts created without dashboard")
+        
+        return chart_ids
+
+    # Delegate dashboard methods to dashboard_manager
+    def get_existing_dashboards(self):
+        """Get all existing dashboards - delegates to dashboard manager"""
+        return self.dashboard_manager.get_existing_dashboards()
+    
+    def create_dashboard(self, title="Auto Dashboard"):
+        """Create a dashboard - delegates to dashboard manager"""
+        return self.dashboard_manager.create_dashboard(title)
+    
+    def update_dashboard_charts(self, dashboard_id, chart_ids):
+        """Add charts to dashboard - delegates to dashboard manager"""
+        return self.dashboard_manager.add_charts_to_dashboard(dashboard_id, chart_ids)
+
+    def delete_chart(self, chart_id):
+        """Delete a chart by ID"""
+        resp = self.session.delete(f"{self.superset_url}/api/v1/chart/{chart_id}", headers=self.headers)
+        if resp.status_code == 200:
+            print(f"✅ Deleted chart ID: {chart_id}")
+            return True
+        else:
+            print(f"❌ Failed to delete chart {chart_id}: {resp.status_code} - {resp.text}")
+            return False
+
+    def get_chart_info(self, chart_id):
+        """Get detailed information about a specific chart"""
+        resp = self.session.get(f"{self.superset_url}/api/v1/chart/{chart_id}", headers=self.headers)
+        if resp.status_code == 200:
+            return resp.json()["result"]
+        else:
+            print(f"❌ Failed to get chart info for {chart_id}: {resp.status_code}")
+            return None
+
+    def copy_working_chart(self, source_chart_name, new_chart_name):
+        """Copy a working chart by name - integrated from successful copier"""
+        # Find the source chart
+        resp = self.session.get(f"{self.superset_url}/api/v1/chart/", headers=self.headers)
+        if resp.status_code != 200:
+            print(f"❌ Failed to list charts: {resp.status_code}")
+            return None
+        
+        charts = resp.json()["result"]
+        source_chart_id = None
+        for chart in charts:
+            if chart["slice_name"] == source_chart_name:
+                source_chart_id = chart["id"]
+                break
+        
+        if not source_chart_id:
+            print(f"❌ Chart '{source_chart_name}' not found")
+            return None
+        
+        # Get the source chart configuration
+        resp = self.session.get(f"{self.superset_url}/api/v1/chart/{source_chart_id}", headers=self.headers)
+        if resp.status_code != 200:
+            print(f"❌ Failed to get chart config: {resp.status_code}")
+            return None
+        
+        source_config = resp.json()["result"]
+        
+        # Extract dataset ID from params or query_context
+        dataset_id = None
+        try:
+            params_str = source_config.get('params', '{}')
+            params = json.loads(params_str) if isinstance(params_str, str) else params_str
+            
+            if 'datasource' in params:
+                datasource = params['datasource']
+                if '__table' in str(datasource):
+                    dataset_id = int(datasource.split('__')[0])
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            pass
+        
+        if dataset_id is None:
+            try:
+                query_context_str = source_config.get('query_context', '{}')
+                query_context = json.loads(query_context_str) if isinstance(query_context_str, str) else query_context_str
+                
+                if 'datasource' in query_context and isinstance(query_context['datasource'], dict):
+                    dataset_id = query_context['datasource'].get('id')
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                pass
+        
+        if dataset_id is None:
+            print("❌ Could not extract dataset ID from source chart")
+            return None
+        
+        # Create new chart with exact same configuration
+        new_payload = {
+            "slice_name": new_chart_name,
+            "viz_type": source_config["viz_type"],
+            "datasource_id": dataset_id,
+            "datasource_type": "table",
+            "params": source_config.get('params', '{}'),
+            "query_context": source_config.get('query_context', '{}')
+        }
+        
+        print(f"🔨 Creating copy of '{source_chart_name}' as '{new_chart_name}'...")
+        resp = self.session.post(f"{self.superset_url}/api/v1/chart/", headers=self.headers, json=new_payload)
+        
+        if resp.status_code == 201:
+            new_chart_id = resp.json()["id"]
+            print(f"✅ Successfully created chart '{new_chart_name}' (ID: {new_chart_id})")
+            return new_chart_id
+        else:
+            print(f"❌ Failed to create chart: {resp.status_code} - {resp.text}")
+            return None
+
+    # === DEBUGGING METHODS ===
+
+    def debug_chart_execution(self, chart_id):
+        """Debug chart execution by running the query directly"""
+        print(f"\n🔍 DEBUGGING CHART {chart_id}")
+        
+        # Get chart info
+        resp = self.session.get(f"{self.superset_url}/api/v1/chart/{chart_id}", headers=self.headers)
+        if resp.status_code != 200:
+            print(f"❌ Failed to get chart info: {resp.status_code}")
+            return
+        
+        chart_info = resp.json()["result"]
+        print(f"📊 Chart name: {chart_info['slice_name']}")
+        print(f"📊 Viz type: {chart_info['viz_type']}")
+        
+        # Try to run the chart query
+        query_context = chart_info.get('query_context')
+        if query_context:
+            print(f"\n🔍 Running chart query...")
+            resp = self.session.post(
+                f"{self.superset_url}/api/v1/chart/data",
+                headers=self.headers,
+                json={"query_context": query_context}
+            )
+            print(f"Query response status: {resp.status_code}")
+            if resp.status_code != 200:
+                print(f"❌ Query failed: {resp.text}")
+            else:
+                result = resp.json()
+                print(f"✅ Query successful: {len(result.get('result', []))} results")
+                if result.get('result'):
+                    print(f"Sample data: {result['result'][0] if result['result'] else 'No data'}")
+
+    def test_dataset_query(self, dataset_id):
+        """Test if we can access the dataset"""
+        print(f"🔍 Testing dataset {dataset_id}...")
+        
+        # Simple test - just get dataset info
+        dataset_info = self.auth.get_dataset_info(dataset_id)
+        if dataset_info:
+            print(f"✅ Dataset accessible with {len(dataset_info['columns'])} columns")
+            return True
+        else:
+            print(f"❌ Dataset {dataset_id} not accessible")
+            return False
