@@ -110,76 +110,251 @@ class SupersetChartCreator:
         }
 
     def _build_line_chart(self, chart_config, dataset_id, dataset_info):
-        """Build payload specifically for line charts - based on working time series example"""
+        """Build payload for basic line charts - FIXED for categorical X-axis"""
         chart_name = chart_config["name"]
         
-        # Use the metric from config or default to count
-        metric = chart_config.get("metric", "count")
+        # Handle metric configuration
+        raw_metric = chart_config.get("metric", "AVG(nps_score)")
         
-        # Get date column
-        date_col = self.select_column(dataset_info["columns"], "date")
-        if not date_col:
-            print(f"⚠️ No date column found. Available columns: {dataset_info['columns']}")
-            date_col = "date"  # fallback
+        # Parse metric properly
+        if "(" in raw_metric and ")" in raw_metric:
+            agg_func = raw_metric.split("(")[0].strip().upper()
+            column_part = raw_metric.split("(")[1].split(")")[0].strip()
+            
+            if column_part == "*":
+                # COUNT(*) case
+                adhoc_metric = {
+                    "expressionType": "SQL",
+                    "sqlExpression": "COUNT(*)",
+                    "label": "COUNT(*)",
+                    "hasCustomLabel": False,
+                    "optionName": "metric_count_all"
+                }
+            else:
+                # Regular aggregation like AVG(nps_score)
+                adhoc_metric = {
+                    "expressionType": "SQL",
+                    "sqlExpression": f"{agg_func}({column_part})",
+                    "label": f"{agg_func}({column_part})",
+                    "hasCustomLabel": False,
+                    "optionName": f"metric_{column_part}_{agg_func.lower()}"
+                }
+        else:
+            # Fallback: treat as column name with AVG
+            adhoc_metric = {
+                "expressionType": "SQL",
+                "sqlExpression": f"AVG({raw_metric})",
+                "label": f"AVG({raw_metric})",
+                "hasCustomLabel": False,
+                "optionName": f"metric_{raw_metric}_avg"
+            }
         
-        print(f"📅 Using date column: {date_col} with metric: {metric}")
+        # Handle X-axis configuration
+        x_axis_config = chart_config.get("x_axis", "date")
         
-        # Line chart form_data based on the working example
+        # Check if we need to extract day of week from date
+        if x_axis_config == "day_of_week":
+            # Use SQL to extract day of week from date column
+            date_col = self.select_column(dataset_info["columns"], "date") or "date"
+            
+            # Create a custom column for day of week
+            day_of_week_column = {
+                "expressionType": "SQL",
+                "sqlExpression": f"TO_CHAR({date_col}, 'Day')",  # PostgreSQL syntax
+                "label": "Day of Week",
+                "hasCustomLabel": True,
+                "optionName": "day_of_week_custom"
+            }
+            
+            groupby_columns = [day_of_week_column]
+            is_temporal = False
+            granularity_col = None
+            
+        elif x_axis_config == "month":
+            # Extract month from date
+            date_col = self.select_column(dataset_info["columns"], "date") or "date"
+            
+            month_column = {
+                "expressionType": "SQL", 
+                "sqlExpression": f"TO_CHAR({date_col}, 'Month')",  # PostgreSQL syntax
+                "label": "Month",
+                "hasCustomLabel": True,
+                "optionName": "month_custom"
+            }
+            
+            groupby_columns = [month_column]
+            is_temporal = False
+            granularity_col = None
+            
+        elif x_axis_config in dataset_info["columns"]:
+            # Use existing column
+            groupby_columns = [x_axis_config]
+            is_temporal = False
+            granularity_col = None
+            
+        else:
+            # Default to time-series behavior
+            is_temporal = True
+            groupby_columns = []
+            granularity_col = self.select_column(dataset_info["columns"], "date") or "date"
+        
+        # Build form_data
         form_data = {
             "datasource": f"{dataset_id}__table",
-            "viz_type": "echarts_timeseries",  # Use the working viz type from screenshot
-            "metrics": [f"SUM({metric})" if metric != "count" else "COUNT(*)"],
-            "groupby": [],  # Empty for time series
-            "adhoc_filters": [
-                {
-                    "clause": "WHERE",
-                    "subject": date_col,
-                    "operator": "TEMPORAL_RANGE",
-                    "comparator": "No filter",
-                    "expressionType": "SIMPLE"
-                }
-            ],
-            "time_range": "No filter",
-            "granularity_sqla": date_col,
-            "time_grain_sqla": "P1D",  # Daily aggregation
-            "show_legend": True,
-            "rich_tooltip": True,
-            "show_markers": False,
-            "line_interpolation": "linear",
-            "contribution_mode": None,
-            "order_desc": False,
-            "row_limit": 10000,
+            "viz_type": "line",
+            "slice_id": None,
+            
+            # Metrics
+            "metrics": [adhoc_metric],
+            "adhoc_filters": [],
+            
+            # Grouping configuration
+            "groupby": groupby_columns if not is_temporal else [],
+            "columns": [],
+            
+            # Time configuration (only for temporal charts)
+            "granularity_sqla": granularity_col if is_temporal else None,
+            "time_grain_sqla": "P1D" if is_temporal else None,
+            "time_range": "No filter" if is_temporal else None,
+            
+            # Chart appearance
+            "row_limit": chart_config.get("custom_params", {}).get("row_limit", 10000),
+            "color_scheme": chart_config.get("custom_params", {}).get("color_scheme", "supersetColors"),
+            "show_brush": "auto" if is_temporal else False,
+            "send_time_range": is_temporal,
+            "show_legend": chart_config.get("custom_params", {}).get("show_legend", True),
+            "rich_tooltip": chart_config.get("custom_params", {}).get("rich_tooltip", True),
+            "show_markers": chart_config.get("custom_params", {}).get("show_markers", True),
+            "line_interpolation": chart_config.get("custom_params", {}).get("line_interpolation", "linear"),
+            
+            # Axis formatting
+            "bottom_margin": "auto",
+            "x_ticks_layout": "auto",
+            "x_axis_format": "smart_date" if is_temporal else "",
+            "left_margin": "auto",
+            "y_axis_format": chart_config.get("custom_params", {}).get("y_axis_format", "SMART_NUMBER"),
+            "y_axis_bounds": chart_config.get("custom_params", {}).get("y_axis_bounds", [None, None]),
+            
+            # Additional options
+            "rolling_type": "None",
+            "comparison_type": "values",
+            "annotation_layers": [],
             "extra_form_data": {},
             "dashboards": []
         }
         
-        # Add any custom params
-        if "custom_params" in chart_config:
-            form_data.update(chart_config["custom_params"])
+        # Remove None values to avoid issues
+        form_data = {k: v for k, v in form_data.items() if v is not None}
         
-        # Query context for time series
+        # Query context
         query_context = {
             "datasource": {"id": dataset_id, "type": "table"},
             "force": False,
             "queries": [
                 {
-                    "filters": [
-                        {
-                            "col": date_col,
-                            "op": "TEMPORAL_RANGE",
-                            "val": "No filter"
-                        }
-                    ],
+                    "filters": [],
                     "extras": {"having": "", "where": ""},
                     "applied_time_extras": {},
-                    "columns": [],
-                    "metrics": form_data["metrics"],
-                    "groupby": [],
+                    "columns": groupby_columns if not is_temporal else [],
+                    "metrics": [adhoc_metric],
+                    "groupby": groupby_columns if not is_temporal else [],
+                    "annotation_layers": [],
+                    "row_limit": form_data["row_limit"],
+                    "series_limit": 0,
+                    "order_desc": False,  # Changed to False for better categorical ordering
+                    "url_params": {},
+                    "custom_params": {},
+                    "custom_form_data": {}
+                }
+            ],
+            "form_data": form_data.copy(),
+            "result_format": "json",
+            "result_type": "full"
+        }
+        
+        # Add temporal fields only if needed
+        if is_temporal:
+            query_context["queries"][0]["time_range"] = "No filter"
+            query_context["queries"][0]["granularity"] = granularity_col
+            query_context["queries"][0]["extras"]["time_grain_sqla"] = "P1D"
+        
+        query_context["form_data"].update({
+            "force": False,
+            "result_format": "json",
+            "result_type": "full"
+        })
+        
+        return {
+            "slice_name": chart_name,
+            "viz_type": "line",
+            "datasource_id": dataset_id,
+            "datasource_type": "table",
+            "params": json.dumps(form_data),
+            "query_context": json.dumps(query_context)
+        }
+
+    def _build_bar_chart(self, chart_config, dataset_id, dataset_info):
+        chart_name = chart_config["name"]
+        metric_col = chart_config.get("metric", "nps_score")
+        
+        # Get date column
+        date_col = self.select_column(dataset_info["columns"], "date") or "date"
+        
+        # Create SQL expression metric
+        sql_metric = {
+            "expressionType": "SQL",
+            "sqlExpression": f"SUM({metric_col})",
+            "label": f"SUM({metric_col})",
+            "hasCustomLabel": False
+        }
+        
+        form_data = {
+            "datasource": f"{dataset_id}__table",
+            "viz_type": "line",
+            "granularity_sqla": date_col,
+            "time_grain_sqla": "P1D",
+            "time_range": "No filter",
+            "metrics": [sql_metric],
+            "adhoc_filters": [],
+            "groupby": [],
+            "row_limit": 10000,
+            "color_scheme": "supersetColors",
+            "show_brush": "auto",
+            "send_time_range": False,
+            "show_legend": True,
+            "rich_tooltip": True,
+            "show_markers": True,
+            "line_interpolation": "linear",
+            "bottom_margin": "auto",
+            "x_ticks_layout": "auto",
+            "x_axis_format": "smart_date",
+            "left_margin": "auto",
+            "y_axis_format": "SMART_NUMBER",
+            "y_axis_bounds": [None, None],
+            "rolling_type": "None",
+            "comparison_type": "values",
+            "annotation_layers": [],
+            "extra_form_data": {},
+            "dashboards": []
+        }
+        
+        # Query context with SQL metric
+        query_context = {
+            "datasource": {"id": dataset_id, "type": "table"},
+            "force": False,
+            "queries": [
+                {
+                    "time_range": "No filter",
                     "granularity": date_col,
+                    "filters": [],
+                    "extras": {"time_grain_sqla": "P1D", "having": "", "where": ""},
+                    "applied_time_extras": {},
+                    "columns": [],
+                    "metrics": [sql_metric],
                     "annotation_layers": [],
                     "row_limit": 10000,
                     "series_limit": 0,
-                    "order_desc": False,
+                    "order_desc": True,
                     "url_params": {},
                     "custom_params": {},
                     "custom_form_data": {}
@@ -198,89 +373,7 @@ class SupersetChartCreator:
         
         return {
             "slice_name": chart_name,
-            "viz_type": "echarts_timeseries",
-            "datasource_id": dataset_id,
-            "datasource_type": "table",
-            "params": json.dumps(form_data),
-            "query_context": json.dumps(query_context)
-        }
-
-    def _build_bar_chart(self, chart_config, dataset_id, dataset_info):
-        """Build payload specifically for bar charts"""
-        chart_name = chart_config["name"]
-        metric = chart_config.get("metric", "count")
-        
-        # Get groupby column
-        groupby_col = None
-        if chart_config.get("groupby_type") == "date":
-            groupby_col = self.select_column(dataset_info["columns"], "date")
-        elif chart_config.get("groupby_type") == "category":
-            groupby_col = self.select_column(dataset_info["columns"], "category")
-        
-        # Bar chart specific form_data
-        form_data = {
-            "datasource": f"{dataset_id}__table",
-            "viz_type": "dist_bar",
-            "metrics": [metric] if isinstance(metric, str) else metric,
-            "groupby": [groupby_col] if groupby_col else [],
-            "columns": [],
-            "adhoc_filters": [],
-            "time_range": "No filter",
-            "row_limit": chart_config.get("custom_params", {}).get("row_limit", 10),
-            "show_legend": chart_config.get("custom_params", {}).get("show_legend", True),
-            "rich_tooltip": chart_config.get("custom_params", {}).get("rich_tooltip", True),
-            "show_bar_value": chart_config.get("custom_params", {}).get("show_bar_value", False),
-            "bar_stacked": chart_config.get("custom_params", {}).get("bar_stacked", False),
-            "order_bars": chart_config.get("custom_params", {}).get("order_bars", False),
-            "y_axis_format": chart_config.get("custom_params", {}).get("y_axis_format", "SMART_NUMBER"),
-            "bottom_margin": "auto",
-            "x_ticks_layout": "auto",
-            "extra_form_data": {},
-            "dashboards": []
-        }
-        
-        # Add any additional custom params
-        if "custom_params" in chart_config:
-            for key, value in chart_config["custom_params"].items():
-                if key not in form_data:
-                    form_data[key] = value
-        
-        # Bar chart specific query_context
-        query_context = {
-            "datasource": {"id": dataset_id, "type": "table"},
-            "force": False,
-            "queries": [
-                {
-                    "filters": [],
-                    "extras": {"having": "", "where": ""},
-                    "applied_time_extras": {},
-                    "columns": form_data["columns"],
-                    "metrics": form_data["metrics"],
-                    "groupby": form_data["groupby"],
-                    "annotation_layers": [],
-                    "row_limit": form_data["row_limit"],
-                    "series_limit": 0,
-                    "order_desc": True,
-                    "url_params": {},
-                    "custom_params": {},
-                    "custom_form_data": {},
-                    "orderby": [[metric, False]] if groupby_col else []
-                }
-            ],
-            "form_data": form_data.copy(),
-            "result_format": "json",
-            "result_type": "full"
-        }
-        
-        query_context["form_data"].update({
-            "force": False,
-            "result_format": "json",
-            "result_type": "full"
-        })
-        
-        return {
-            "slice_name": chart_name,
-            "viz_type": "dist_bar",
+            "viz_type": "line",
             "datasource_id": dataset_id,
             "datasource_type": "table",
             "params": json.dumps(form_data),
@@ -373,7 +466,8 @@ class SupersetChartCreator:
         viz_type = chart_config["viz_type"]
         
         print(f"🔧 Building {viz_type} chart: {chart_config['name']}")
-        
+        print("chart_config: ", chart_config)
+        print(viz_type)
         # Route to specific method based on chart type
         if viz_type == "big_number_total":
             return self._build_big_number_chart(chart_config, dataset_id, dataset_info)
@@ -565,18 +659,18 @@ class SupersetChartCreator:
         
         print(f"✅ Successfully processed {len(chart_ids)} charts")
         
-        # If dashboard title provided, create dashboard and add charts
-        if dashboard_title:
-            print(f"\n🏗️ Creating/updating dashboard '{dashboard_title}'...")
-            dashboard_id = self.dashboard_manager.create_dashboard(dashboard_title)
+        # # If dashboard title provided, create dashboard and add charts
+        # if dashboard_title:
+        #     print(f"\n🏗️ Creating/updating dashboard '{dashboard_title}'...")
+        #     dashboard_id = self.dashboard_manager.create_dashboard(dashboard_title)
             
-            if dashboard_id:
-                print(f"🔗 Adding charts to dashboard...")
-                self.dashboard_manager.add_charts_to_dashboard(dashboard_id, chart_ids)
-            else:
-                print("⚠️ Dashboard creation failed - charts created but not added to dashboard")
-        else:
-            print("ℹ️ No dashboard specified - charts created without dashboard")
+        #     if dashboard_id:
+        #         print(f"🔗 Adding charts to dashboard...")
+        #         self.dashboard_manager.add_charts_to_dashboard(dashboard_id, chart_ids)
+        #     else:
+        #         print("⚠️ Dashboard creation failed - charts created but not added to dashboard")
+        # else:
+        #     print("ℹ️ No dashboard specified - charts created without dashboard")
         
         return chart_ids
 
@@ -621,6 +715,7 @@ class SupersetChartCreator:
             return None
         
         charts = resp.json()["result"]
+        # print(charts)
         source_chart_id = None
         for chart in charts:
             if chart["slice_name"] == source_chart_name:
@@ -638,6 +733,7 @@ class SupersetChartCreator:
             return None
         
         source_config = resp.json()["result"]
+        print(source_config)
         
         # Extract dataset ID from params or query_context
         dataset_id = None

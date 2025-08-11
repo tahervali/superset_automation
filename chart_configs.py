@@ -39,10 +39,32 @@ LINE_CHARTS = [
 # Simple Line Charts - try different approaches
 SIMPLE_LINE = [
     {
-        "name": "Simple Time Series",
-        "viz_type": "echarts_timeseries",
-        "metric": "count"
-    }
+        "name": "Basic NPS Test",
+        "viz_type": "line", 
+        "metric": "AVG(nps_score)",
+        "custom_params": {"show_markers": True}
+    },
+    {
+        "name": "Day of Week Test",
+        "viz_type": "line",
+        "metric": "AVG(nps_score)",
+        "x_axis": "day_of_week",
+        "custom_params": {"show_markers": True}
+    },
+    {
+        "name": "NPS Score by Day of Week",  # Exact name from screenshot
+        "viz_type": "line",
+        "metric": "AVG(nps_score)",
+        "x_axis": "day_of_week",
+        "custom_params": {
+            "show_markers": True,
+            "line_interpolation": "linear",
+            "rich_tooltip": True,
+            "show_legend": True,
+            "y_axis_format": ".1f",
+            "row_limit": 10000
+        }
+    },
 ]
 
 # Bar Charts
