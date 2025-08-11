@@ -110,74 +110,132 @@ class SupersetChartCreator:
         }
 
     def _build_line_chart(self, chart_config, dataset_id, dataset_info):
-        """Build payload for basic line charts (viz_type: line) - FIXED VERSION"""
+        """Build payload for basic line charts - FIXED for categorical X-axis"""
         chart_name = chart_config["name"]
         
-        # Handle both old and new config formats
-        if "metric_col" in chart_config:
-            metric_col = chart_config["metric_col"]
-            metric_type = chart_config.get("metric", "SUM")
+        # Handle metric configuration
+        raw_metric = chart_config.get("metric", "AVG(nps_score)")
+        
+        # Parse metric properly
+        if "(" in raw_metric and ")" in raw_metric:
+            agg_func = raw_metric.split("(")[0].strip().upper()
+            column_part = raw_metric.split("(")[1].split(")")[0].strip()
+            
+            if column_part == "*":
+                # COUNT(*) case
+                adhoc_metric = {
+                    "expressionType": "SQL",
+                    "sqlExpression": "COUNT(*)",
+                    "label": "COUNT(*)",
+                    "hasCustomLabel": False,
+                    "optionName": "metric_count_all"
+                }
+            else:
+                # Regular aggregation like AVG(nps_score)
+                adhoc_metric = {
+                    "expressionType": "SQL",
+                    "sqlExpression": f"{agg_func}({column_part})",
+                    "label": f"{agg_func}({column_part})",
+                    "hasCustomLabel": False,
+                    "optionName": f"metric_{column_part}_{agg_func.lower()}"
+                }
         else:
-            # Fallback to old format
-            metric_col = chart_config.get("metric", "nps_score")
-            metric_type = "SUM"
+            # Fallback: treat as column name with AVG
+            adhoc_metric = {
+                "expressionType": "SQL",
+                "sqlExpression": f"AVG({raw_metric})",
+                "label": f"AVG({raw_metric})",
+                "hasCustomLabel": False,
+                "optionName": f"metric_{raw_metric}_avg"
+            }
         
-        # Get date column
-        date_col = self.select_column(dataset_info["columns"], "date") or "date"
+        # Handle X-axis configuration
+        x_axis_config = chart_config.get("x_axis", "date")
         
-        # Create adhoc metric object with complete column metadata - FIXED
-        adhoc_metric = {
-            "expressionType": "SIMPLE",
-            "column": {
-                "advanced_data_type": None,
-                "certification_details": None,
-                "certified_by": None,
-                "column_name": metric_col,
-                "description": None,
-                "expression": None,
-                "filterable": True,
-                "groupby": True,
-                "id": 2,  # This should ideally be the actual column ID
-                "is_certified": False,
-                "is_dttm": False,
-                "python_date_format": None,
-                "type": "INTEGER",
-                "type_generic": 0,
-                "verbose_name": None,
-                "warning_markdown": None
-            },
-            "aggregate": metric_type,  # Use the metric type from config
-            "sqlExpression": None,
-            "datasourceWarning": False,
-            "hasCustomLabel": False,
-            "label": f"{metric_type}({metric_col})",  # Dynamic label
-            "optionName": f"metric_{metric_col}_{metric_type.lower()}"  # Dynamic option name
-        }
+        # Check if we need to extract day of week from date
+        if x_axis_config == "day_of_week":
+            # Use SQL to extract day of week from date column
+            date_col = self.select_column(dataset_info["columns"], "date") or "date"
+            
+            # Create a custom column for day of week
+            day_of_week_column = {
+                "expressionType": "SQL",
+                "sqlExpression": f"TO_CHAR({date_col}, 'Day')",  # PostgreSQL syntax
+                "label": "Day of Week",
+                "hasCustomLabel": True,
+                "optionName": "day_of_week_custom"
+            }
+            
+            groupby_columns = [day_of_week_column]
+            is_temporal = False
+            granularity_col = None
+            
+        elif x_axis_config == "month":
+            # Extract month from date
+            date_col = self.select_column(dataset_info["columns"], "date") or "date"
+            
+            month_column = {
+                "expressionType": "SQL", 
+                "sqlExpression": f"TO_CHAR({date_col}, 'Month')",  # PostgreSQL syntax
+                "label": "Month",
+                "hasCustomLabel": True,
+                "optionName": "month_custom"
+            }
+            
+            groupby_columns = [month_column]
+            is_temporal = False
+            granularity_col = None
+            
+        elif x_axis_config in dataset_info["columns"]:
+            # Use existing column
+            groupby_columns = [x_axis_config]
+            is_temporal = False
+            granularity_col = None
+            
+        else:
+            # Default to time-series behavior
+            is_temporal = True
+            groupby_columns = []
+            granularity_col = self.select_column(dataset_info["columns"], "date") or "date"
         
+        # Build form_data
         form_data = {
             "datasource": f"{dataset_id}__table",
             "viz_type": "line",
-            "slice_id": None,  # Will be set after creation
-            "granularity_sqla": date_col,
-            "time_grain_sqla": "P1D",
-            "time_range": "No filter",
+            "slice_id": None,
+            
+            # Metrics
             "metrics": [adhoc_metric],
             "adhoc_filters": [],
-            "groupby": [],
-            "row_limit": 10000,
-            "color_scheme": "supersetColors",
-            "show_brush": "auto",
-            "send_time_range": False,
-            "show_legend": True,
-            "rich_tooltip": True,
-            "show_markers": True,
-            "line_interpolation": "linear",
+            
+            # Grouping configuration
+            "groupby": groupby_columns if not is_temporal else [],
+            "columns": [],
+            
+            # Time configuration (only for temporal charts)
+            "granularity_sqla": granularity_col if is_temporal else None,
+            "time_grain_sqla": "P1D" if is_temporal else None,
+            "time_range": "No filter" if is_temporal else None,
+            
+            # Chart appearance
+            "row_limit": chart_config.get("custom_params", {}).get("row_limit", 10000),
+            "color_scheme": chart_config.get("custom_params", {}).get("color_scheme", "supersetColors"),
+            "show_brush": "auto" if is_temporal else False,
+            "send_time_range": is_temporal,
+            "show_legend": chart_config.get("custom_params", {}).get("show_legend", True),
+            "rich_tooltip": chart_config.get("custom_params", {}).get("rich_tooltip", True),
+            "show_markers": chart_config.get("custom_params", {}).get("show_markers", True),
+            "line_interpolation": chart_config.get("custom_params", {}).get("line_interpolation", "linear"),
+            
+            # Axis formatting
             "bottom_margin": "auto",
             "x_ticks_layout": "auto",
-            "x_axis_format": "smart_date",
+            "x_axis_format": "smart_date" if is_temporal else "",
             "left_margin": "auto",
-            "y_axis_format": "SMART_NUMBER",
-            "y_axis_bounds": [None, None],
+            "y_axis_format": chart_config.get("custom_params", {}).get("y_axis_format", "SMART_NUMBER"),
+            "y_axis_bounds": chart_config.get("custom_params", {}).get("y_axis_bounds", [None, None]),
+            
+            # Additional options
             "rolling_type": "None",
             "comparison_type": "values",
             "annotation_layers": [],
@@ -185,27 +243,25 @@ class SupersetChartCreator:
             "dashboards": []
         }
         
-        # Add custom params from config if any
-        if "custom_params" in chart_config:
-            form_data.update(chart_config["custom_params"])
+        # Remove None values to avoid issues
+        form_data = {k: v for k, v in form_data.items() if v is not None}
         
-        # Query context with proper structure
+        # Query context
         query_context = {
             "datasource": {"id": dataset_id, "type": "table"},
             "force": False,
             "queries": [
                 {
-                    "time_range": "No filter",
-                    "granularity": date_col,
                     "filters": [],
-                    "extras": {"time_grain_sqla": "P1D", "having": "", "where": ""},
+                    "extras": {"having": "", "where": ""},
                     "applied_time_extras": {},
-                    "columns": [],
+                    "columns": groupby_columns if not is_temporal else [],
                     "metrics": [adhoc_metric],
+                    "groupby": groupby_columns if not is_temporal else [],
                     "annotation_layers": [],
-                    "row_limit": 10000,
+                    "row_limit": form_data["row_limit"],
                     "series_limit": 0,
-                    "order_desc": True,
+                    "order_desc": False,  # Changed to False for better categorical ordering
                     "url_params": {},
                     "custom_params": {},
                     "custom_form_data": {}
@@ -216,7 +272,12 @@ class SupersetChartCreator:
             "result_type": "full"
         }
         
-        # Add required fields to form_data for query_context
+        # Add temporal fields only if needed
+        if is_temporal:
+            query_context["queries"][0]["time_range"] = "No filter"
+            query_context["queries"][0]["granularity"] = granularity_col
+            query_context["queries"][0]["extras"]["time_grain_sqla"] = "P1D"
+        
         query_context["form_data"].update({
             "force": False,
             "result_format": "json",
